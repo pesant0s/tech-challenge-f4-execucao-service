@@ -20,6 +20,8 @@ class PecaResponse(BaseModel):
     preco: Decimal
     quantidade: int
     estoque_minimo: int
+    reservada: int
+    disponivel: int
 
 
 class EntradaEstoque(BaseModel):

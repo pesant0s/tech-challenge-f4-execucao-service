@@ -45,7 +45,7 @@ def atualizar_peca(peca_id: UUID, data: PecaCreate, db: Session = Depends(get_db
 
 @router.delete("/pecas/{peca_id}", status_code=204,
     summary="Remover peça",
-    description="Não permite remoção se vinculada a uma OS. **Requer ADMIN.**")
+    description="Não permite remoção se tiver reserva ativa ou movimentação. **Requer ADMIN.**")
 def deletar_peca(peca_id: UUID, db: Session = Depends(get_db), _=Depends(require_admin)):
     _use_case(db).remover(peca_id)
 

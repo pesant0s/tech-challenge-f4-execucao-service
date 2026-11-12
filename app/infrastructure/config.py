@@ -7,13 +7,11 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    ADMIN_USERNAME: str = "admin"
-    ADMIN_PASSWORD: str = "admin123"
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
-    WEBHOOK_SECRET: str = "webhook-secret-local"
     LOG_FORMAT: str = "console"
     LOG_LEVEL: str = "INFO"
+    # Sem RABBITMQ_URL a mensageria não sobe: a API atende e os eventos ficam parados no outbox.
+    RABBITMQ_URL: str | None = None
 
 
 settings = Settings()

@@ -45,6 +45,6 @@ def atualizar_servico(servico_id: UUID, data: ServicoCreate, db: Session = Depen
 
 @router.delete("/servicos/{servico_id}", status_code=204,
     summary="Remover serviço",
-    description="Não permite remoção se vinculado a uma OS. **Requer ADMIN.**")
+    description="Não permite remoção se estiver em uma reserva ativa. **Requer ADMIN.**")
 def deletar_servico(servico_id: UUID, db: Session = Depends(get_db), _=Depends(require_admin)):
     _use_case(db).remover(servico_id)

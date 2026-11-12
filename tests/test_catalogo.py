@@ -1,6 +1,3 @@
-CPF_CAT = "529.982.247-25"
-
-
 def _criar_servico(client, auth_headers, nome="Troca de óleo", preco=150.00):
     return client.post("/catalogo/servicos", json={
         "nome": nome, "preco": preco
@@ -80,23 +77,6 @@ def test_deletar_servico(client, auth_headers):
     assert r.status_code == 204
     r2 = client.get(f"/catalogo/servicos/{s['id']}", headers=auth_headers)
     assert r2.status_code == 404
-
-
-def test_deletar_servico_vinculado_a_os(client, auth_headers):
-    s = _criar_servico(client, auth_headers, "Serviço vinculado")
-    cliente = client.post("/cadastro/clientes", json={
-        "nome": "Cliente", "cpf_cnpj": CPF_CAT, "telefone": "11999999999"
-    }, headers=auth_headers).json()
-    veiculo = client.post("/cadastro/veiculos", json={
-        "placa": "CAT-0001", "marca": "Toyota", "modelo": "Corolla",
-        "ano": "2022", "cliente_id": cliente["id"]
-    }, headers=auth_headers).json()
-    client.post("/atendimento/os", json={
-        "cliente_id": cliente["id"], "veiculo_id": veiculo["id"],
-        "servicos": [{"servico_id": s["id"], "quantidade": 1}]
-    }, headers=auth_headers)
-    r = client.delete(f"/catalogo/servicos/{s['id']}", headers=auth_headers)
-    assert r.status_code == 422
 
 
 def test_catalogo_requer_auth(client):

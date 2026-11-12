@@ -1,5 +1,5 @@
 from app.domain.entities.catalogo import Servico
-from app.domain.exceptions import NotFoundException, ConflictException, BusinessRuleException
+from app.domain.exceptions import NotFoundException, ConflictException
 
 
 class GerenciarCatalogoUseCase:
@@ -38,7 +38,7 @@ class GerenciarCatalogoUseCase:
 
     def remover(self, servico_id) -> None:
         servico = self.obter(servico_id)
-        if self._repo.possui_vinculo_os(servico_id):
-            raise BusinessRuleException("Serviço vinculado a OS ativa — não pode ser removido")
+        if self._repo.possui_reserva_ativa(servico_id):
+            raise ConflictException("Serviço em reserva ativa — não pode ser removido")
         self._repo.remover(servico)
         self._repo.commit()

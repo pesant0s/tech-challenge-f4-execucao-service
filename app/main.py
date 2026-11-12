@@ -1,30 +1,19 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
-from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.infrastructure.config import settings
 from app.infrastructure.logging_config import ConsoleFormatter, JsonFormatter, obter_correlation_id
-from app.infrastructure.security import create_access_token, pwd_context
-from app.infrastructure.database import get_db
+from app.infrastructure.database import SessionLocal, get_db
+from app.infrastructure.trabalhador import TrabalhadorMensageria
 from app.adapters.inbound.http.middleware import CorrelationIdMiddleware, SecurityHeadersMiddleware
-from app.adapters.inbound.http.auth_schemas import UsuarioCreate
-from app.adapters.inbound.http.cadastro_routes import router as cadastro_router
 from app.adapters.inbound.http.catalogo_routes import router as catalogo_router
 from app.adapters.inbound.http.estoque_routes import router as estoque_router
-from app.adapters.inbound.http.atendimento_routes import router as atendimento_router
-from app.adapters.inbound.http.auth_routes import router as auth_router
-from app.adapters.inbound.http.webhook_routes import router as webhook_router
-from app.adapters.outbound.persistence.auth_repository import create_usuario, get_usuario_by_username
-from app.domain.entities.usuario import RoleEnum
+from app.adapters.inbound.http.execucao_routes import router as execucao_router
 from app.domain.exceptions import NotFoundException, ConflictException, BusinessRuleException
 
 # Configurado no import para que os logs de startup já saiam no formato final.
@@ -34,61 +23,44 @@ logging.basicConfig(handlers=[_saida], level=settings.LOG_LEVEL.upper(), force=T
 for _nome in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(_nome).handlers.clear()
     logging.getLogger(_nome).propagate = True
+logging.getLogger("pika").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    fabrica = app.dependency_overrides.get(get_db, get_db)
-    db = next(fabrica())
+    trabalhador = None
+    if settings.RABBITMQ_URL:
+        trabalhador = TrabalhadorMensageria(settings.RABBITMQ_URL, SessionLocal)
+        trabalhador.start()
     try:
-        if not get_usuario_by_username(db, settings.ADMIN_USERNAME):
-            create_usuario(db, UsuarioCreate(
-                username=settings.ADMIN_USERNAME,
-                password=settings.ADMIN_PASSWORD,
-                role=RoleEnum.ADMIN,
-            ))
-    except IntegrityError:
-        db.rollback()  # outro worker ou pod semeou o admin ao mesmo tempo
+        yield
     finally:
-        if get_db not in app.dependency_overrides:
-            db.close()
-    yield
+        if trabalhador:
+            trabalhador.parar()
 
-
-# Atrás do API Gateway a origem vista é a VPC; o gateway repassa o IP do cliente em x-cliente-ip.
-limiter = Limiter(key_func=lambda request: request.headers.get("x-cliente-ip") or get_remote_address(request))
 
 app = FastAPI(
-    title="Tech Challenge — Oficina Mecânica",
+    title="Tech Challenge — Oficina · Execução e Produção",
     description="""
-Sistema de gestão de ordens de serviço para oficinas mecânicas.
+Serviço de execução da oficina: catálogo de serviços, estoque de peças com reserva por OS e a fila de
+produção (diagnóstico, reparo e finalização). As reservas e a entrada na fila chegam como comandos da
+Saga da OS pelo RabbitMQ; as rotas abaixo atendem a oficina.
 
 ## Autenticação
 
-Dois tipos de token, ambos enviados como `Authorization: Bearer <token>`:
-
-| Quem | Como obtém | Esquema no Authorize |
-|---|---|---|
-| **Funcionário** | `POST /auth/token` com usuário e senha | `OAuth2PasswordBearer` |
-| **Cliente** | `POST /auth/cpf` com o CPF — Lambda publicada no API Gateway | `TokenCliente` |
-
-O claim `tipo` do JWT separa os dois: token de cliente não abre as rotas de operação da
-oficina, e token de funcionário não se passa por cliente.
-
-## Papéis de funcionário
+Token de funcionário emitido pelo OS Service (`POST /auth/token`), enviado como
+`Authorization: Bearer <token>`. Aqui só se confere a assinatura e os claims (`tipo`, `sub`, `role`).
+Token de cliente recebe 403.
 
 | Role | Descrição |
 |---|---|
-| `ADMIN` | Acesso total — gerencia usuários, catálogo e estoque |
-| `ATENDENTE` | Acesso operacional — clientes, veículos e ordens de serviço |
+| `ADMIN` | Cadastra e altera catálogo e estoque |
+| `ATENDENTE` | Consulta o catálogo e o estoque e conduz a fila de execução |
 
-## Rotas do cliente
+## Fila de execução
 
-| Rota | Descrição |
-|---|---|
-| `GET /atendimento/os/consulta` | Ordens de serviço do cliente autenticado |
-| `GET /atendimento/os/{id}` | Detalhe da OS — o cliente só vê as próprias |
-| `POST /atendimento/os/{id}/aprovar` · `/rejeitar` | Decisão sobre o orçamento |
+`NA_FILA` → `EM_DIAGNOSTICO` → `EM_EXECUCAO` → `FINALIZADA` (ou `CANCELADA` quando a Saga desfaz a OS
+ainda na fila). Cada mudança publica o evento correspondente no RabbitMQ.
 
 ## Acesso público
 
@@ -96,21 +68,12 @@ oficina, e token de funcionário não se passa por cliente.
 |---|---|
 | `GET /health` | Liveness |
 | `GET /health/ready` | Readiness — confirma o banco |
-
-## Ciclo de vida da OS
-
-`AGUARDANDO_APROVACAO` → `RECEBIDA` → `EM_DIAGNOSTICO` → `EM_EXECUCAO` → `FINALIZADA` → `ENTREGUE`
-
-Transições alternativas: `NEGADA`, `ABANDONADA`
     """,
     version="1.0.0",
     lifespan=lifespan,
     swagger_ui_parameters={"persistAuthorization": True},
     redoc_url="/redoc",
 )
-
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 def _erro(status_code: int, detail: str) -> JSONResponse:
@@ -144,22 +107,9 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 
-app.include_router(auth_router)
-app.include_router(cadastro_router)
 app.include_router(catalogo_router)
 app.include_router(estoque_router)
-app.include_router(atendimento_router)
-app.include_router(webhook_router)
-
-
-@app.post("/auth/token", tags=["Auth"], summary="Obter token JWT")
-@limiter.limit("10/minute")
-def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = get_usuario_by_username(db, form_data.username)
-    if not user or not user.ativo or not pwd_context.verify(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciais inválidas")
-    token = create_access_token({"sub": user.username, "role": user.role, "tipo": "usuario"})
-    return {"access_token": token, "token_type": "bearer"}
+app.include_router(execucao_router)
 
 
 @app.get("/health", tags=["Sistema"], summary="Liveness")
