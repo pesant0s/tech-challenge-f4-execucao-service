@@ -2,9 +2,9 @@
 services:
   api:
     build: .
-    container_name: oficina-api
+    container_name: execucao-api
     ports:
-      - "8000:8000"
+      - "8002:8000"
     env_file: .env
     environment:
       PYTHONPATH: /app
@@ -24,17 +24,33 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    container_name: execucao-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: oficina
+      RABBITMQ_DEFAULT_PASS: oficina
+    ports:
+      - "5672:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
 
   db:
     image: postgres:16-alpine
-    container_name: oficina-db
+    container_name: execucao-db
     env_file: .env
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-oficina}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-execucao}"]
       interval: 5s
       timeout: 5s
       retries: 5

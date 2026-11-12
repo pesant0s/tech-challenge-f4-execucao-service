@@ -1,12 +1,12 @@
-import os
-os.environ.setdefault("RATELIMIT_ENABLED", "False")
-
 import pytest
+from datetime import datetime, timedelta, timezone
+from jose import jwt
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 from app.main import app
+from app.infrastructure.config import settings
 from app.infrastructure.database import metadata, get_db
 
 engine = create_engine(
@@ -30,11 +30,6 @@ def db():
 
 @pytest.fixture(scope="function")
 def client(db):
-    from app.domain.entities.usuario import RoleEnum
-    from app.adapters.outbound.persistence.auth_repository import create_usuario
-    from app.adapters.inbound.http.auth_schemas import UsuarioCreate
-    create_usuario(db, UsuarioCreate(username="admin", password="admin123", role=RoleEnum.ADMIN))
-
     def override_get_db():
         try:
             yield db
@@ -47,42 +42,24 @@ def client(db):
     app.dependency_overrides.clear()
 
 
-@pytest.fixture(scope="function")
-def auth_headers(client):
-    """Token de ADMIN."""
-    resp = client.post("/auth/token", data={"username": "admin", "password": "admin123"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture(scope="function")
-def atendente_headers(client, db):
-    """Token de ATENDENTE."""
-    from app.domain.entities.usuario import RoleEnum
-    from app.adapters.outbound.persistence.auth_repository import create_usuario
-    from app.adapters.inbound.http.auth_schemas import UsuarioCreate
-    create_usuario(db, UsuarioCreate(username="atendente", password="atend123", role=RoleEnum.ATENDENTE))
-    resp = client.post("/auth/token", data={"username": "atendente", "password": "atend123"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture(scope="function")
-def token_cliente():
-    """Token no formato emitido pela Lambda; quebra aqui se a API deixar de aceitá-lo."""
-    from datetime import datetime, timedelta, timezone
-    from app.infrastructure.security import create_access_token
-
-    def _emitir(cliente: dict, expira_em_minutos: int = 60, **sobrescrever) -> dict:
-        claims = {
-            "sub": cliente["id"],
-            "tipo": "cliente",
-            "cpf_cnpj": cliente["cpf_cnpj"],
-            "nome": cliente["nome"],
-            "iat": int(datetime.now(timezone.utc).timestamp()),
-            **sobrescrever,
-        }
-        token = create_access_token(claims, expires_delta=timedelta(minutes=expira_em_minutos))
+@pytest.fixture(scope="session")
+def emitir_token():
+    """Token no formato do OS Service; os claims podem ser sobrescritos para montar tokens inválidos."""
+    def _emitir(minutos: int = 60, **claims) -> dict:
+        corpo = {"sub": "ana", "role": "ATENDENTE", "tipo": "usuario",
+                 "exp": datetime.now(timezone.utc) + timedelta(minutes=minutos), **claims}
+        token = jwt.encode({k: v for k, v in corpo.items() if v is not None}, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
         return {"Authorization": f"Bearer {token}"}
-
     return _emitir
+
+
+@pytest.fixture(scope="function")
+def auth_headers(emitir_token):
+    """Token de ADMIN."""
+    return emitir_token(sub="admin", role="ADMIN")
+
+
+@pytest.fixture(scope="function")
+def atendente_headers(emitir_token):
+    """Token de ATENDENTE."""
+    return emitir_token(sub="atendente", role="ATENDENTE")

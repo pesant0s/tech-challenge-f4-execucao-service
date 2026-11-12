@@ -1,8 +1,8 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.domain.entities.estoque import Peca, MovimentacaoEstoque
-from app.domain.entities.os import ItemOS
-from app.domain.exceptions import NotFoundException, BusinessRuleException
+from app.domain.entities.reserva import Reserva, ReservaEstado, ReservaItem, TipoItem
+from app.domain.exceptions import NotFoundException
 
 
 class EstoqueRepositoryAdapter:
@@ -21,16 +21,10 @@ class EstoqueRepositoryAdapter:
             raise NotFoundException("Peça não encontrada")
         return p
 
-    def baixar_estoque(self, peca_id, quantidade: int, motivo: str = "Baixa por OS") -> None:
-        # FOR UPDATE: duas OS não consomem a mesma peça entre a checagem e o commit.
-        p = self._db.query(Peca).filter(Peca.id == peca_id).with_for_update().first()
-        if not p:
-            raise NotFoundException("Peça não encontrada")
-        if p.quantidade < quantidade:
-            raise BusinessRuleException(f"Estoque insuficiente para peça '{p.nome}'")
-        p.quantidade -= quantidade
-        self._db.add(MovimentacaoEstoque(peca_id=peca_id, tipo="SAIDA", quantidade=quantidade, motivo=motivo))
-        self._db.flush()
+    def buscar_pecas_para_escrita(self, ids) -> dict:
+        """Trava em ordem de id: duas OS com as mesmas peças não se bloqueiam em ciclo."""
+        pecas = self._db.query(Peca).filter(Peca.id.in_(ids)).order_by(Peca.id).with_for_update().all()
+        return {p.id: p for p in pecas}
 
     def listar(self, skip: int = 0, limit: int = 100) -> list[Peca]:
         return self._db.query(Peca).offset(skip).limit(limit).all()
@@ -41,8 +35,16 @@ class EstoqueRepositoryAdapter:
             q = q.filter(Peca.id != exclude_id)
         return q.first() is not None
 
-    def possui_vinculo_os(self, peca_id) -> bool:
-        return self._db.query(ItemOS).filter(ItemOS.peca_id == peca_id).first() is not None
+    def possui_vinculo(self, peca_id) -> bool:
+        """Reserva ativa ou qualquer movimentação de estoque."""
+        movimentada = self._db.query(MovimentacaoEstoque).filter(MovimentacaoEstoque.peca_id == peca_id).first()
+        reservada = (
+            self._db.query(ReservaItem).join(Reserva, Reserva.id == ReservaItem.reserva_id)
+            .filter(ReservaItem.tipo == TipoItem.PECA, ReservaItem.item_id == peca_id,
+                    Reserva.estado == ReservaEstado.ATIVA)
+            .first()
+        )
+        return movimentada is not None or reservada is not None
 
     def registrar_movimentacao(self, peca_id, tipo: str, quantidade: int, motivo: str | None) -> None:
         self._db.add(MovimentacaoEstoque(peca_id=peca_id, tipo=tipo, quantidade=quantidade, motivo=motivo))

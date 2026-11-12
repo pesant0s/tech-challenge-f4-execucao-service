@@ -22,10 +22,10 @@ def _registro(mensagem: str = "teste", **extras) -> logging.LogRecord:
 
 def test_log_json_tem_os_campos_obrigatorios():
     definir_correlation_id("abc-123")
-    evento = json.loads(JsonFormatter().format(_registro("OS criada")))
+    evento = json.loads(JsonFormatter().format(_registro("Reserva criada")))
     assert evento["level"] == "INFO"
     assert evento["logger"] == "oficina.teste"
-    assert evento["message"] == "OS criada"
+    assert evento["message"] == "Reserva criada"
     assert evento["correlation_id"] == "abc-123"
     assert "timestamp" in evento
 
@@ -45,9 +45,9 @@ def test_log_json_liga_a_linha_ao_trace_do_new_relic(monkeypatch):
 
 
 def test_log_json_omite_campos_nulos():
-    evento = json.loads(JsonFormatter().format(_registro(status_anterior=None, status_novo="AGUARDANDO_APROVACAO")))
+    evento = json.loads(JsonFormatter().format(_registro(status_anterior=None, status_novo="NA_FILA")))
     assert "status_anterior" not in evento
-    assert evento["status_novo"] == "AGUARDANDO_APROVACAO"
+    assert evento["status_novo"] == "NA_FILA"
 
 
 def test_log_json_omite_correlation_id_fora_de_requisicao():
@@ -82,9 +82,9 @@ def test_correlation_id_recebido_e_preservado(client):
     assert resposta.headers["x-request-id"] == enviado
 
 
-def test_erro_de_negocio_devolve_correlation_id(client, auth_headers):
-    resposta = client.get("/cadastro/clientes/buscar?cpf_cnpj=000", headers=auth_headers)
-    assert resposta.status_code == 422
+def test_erro_de_negocio_devolve_correlation_id(client, atendente_headers):
+    resposta = client.post("/execucao/fila/proxima", headers=atendente_headers)
+    assert resposta.status_code == 404
     corpo = resposta.json()
     assert corpo["correlation_id"]
     assert corpo["detail"]

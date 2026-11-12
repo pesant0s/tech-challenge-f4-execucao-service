@@ -1,7 +1,7 @@
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.domain.entities.catalogo import Servico
-from app.domain.entities.os import ItemOS
+from app.domain.entities.reserva import Reserva, ReservaEstado, ReservaItem, TipoItem
 
 
 class CatalogoRepositoryAdapter:
@@ -13,6 +13,9 @@ class CatalogoRepositoryAdapter:
     def buscar_servico(self, servico_id) -> Servico | None:
         return self._db.query(Servico).filter(Servico.id == servico_id).first()
 
+    def buscar_servicos(self, ids) -> dict:
+        return {s.id: s for s in self._db.query(Servico).filter(Servico.id.in_(ids)).all()}
+
     def listar(self, skip: int = 0, limit: int = 100) -> list[Servico]:
         return self._db.query(Servico).offset(skip).limit(limit).all()
 
@@ -22,8 +25,13 @@ class CatalogoRepositoryAdapter:
             q = q.filter(Servico.id != exclude_id)
         return q.first() is not None
 
-    def possui_vinculo_os(self, servico_id) -> bool:
-        return self._db.query(ItemOS).filter(ItemOS.servico_id == servico_id).first() is not None
+    def possui_reserva_ativa(self, servico_id) -> bool:
+        return (
+            self._db.query(ReservaItem).join(Reserva, Reserva.id == ReservaItem.reserva_id)
+            .filter(ReservaItem.tipo == TipoItem.SERVICO, ReservaItem.item_id == servico_id,
+                    Reserva.estado == ReservaEstado.ATIVA)
+            .first() is not None
+        )
 
     def adicionar(self, servico) -> None:
         self._db.add(servico)

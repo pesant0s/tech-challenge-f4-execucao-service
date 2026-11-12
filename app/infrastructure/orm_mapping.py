@@ -2,19 +2,18 @@
 import uuid
 from datetime import timezone
 from sqlalchemy import (
-    Table, Column, String, Integer, Numeric, Boolean, DateTime, ForeignKey,
-    Enum, UniqueConstraint, CheckConstraint, TypeDecorator,
+    Table, Column, String, Integer, Numeric, DateTime, ForeignKey,
+    Enum, UniqueConstraint, CheckConstraint, Index, JSON, TypeDecorator,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func, text
+from sqlalchemy.sql import func
 
 from app.infrastructure.database import mapper_registry, metadata
-from app.domain.entities.usuario import Usuario, RoleEnum
-from app.domain.entities.cliente import Cliente, Veiculo
 from app.domain.entities.catalogo import Servico
 from app.domain.entities.estoque import Peca, MovimentacaoEstoque
-from app.domain.entities.os import OrdemDeServico, ItemOS, HistoricoStatusOS, StatusOS
+from app.domain.entities.execucao import OrdemExecucao, StatusExecucao
+from app.domain.entities.reserva import Reserva, ReservaEstado, ReservaItem, TipoItem
 
 
 class DataHoraUTC(TypeDecorator):
@@ -28,35 +27,6 @@ class DataHoraUTC(TypeDecorator):
             return None
         return valor.replace(tzinfo=timezone.utc) if valor.tzinfo is None else valor.astimezone(timezone.utc)
 
-
-usuarios = Table(
-    "usuarios", metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("username", String(50), unique=True, nullable=False, index=True),
-    Column("hashed_password", String(255), nullable=False),
-    Column("role", Enum(RoleEnum), nullable=False, default=RoleEnum.ATENDENTE),
-    Column("ativo", Boolean, nullable=False, default=True),
-)
-
-clientes = Table(
-    "clientes", metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("nome", String(150), nullable=False),
-    Column("cpf_cnpj", String(18), nullable=False, unique=True),
-    Column("email", String(150), nullable=True),
-    Column("telefone", String(20), nullable=False),
-    Column("ativo", Boolean, nullable=False, default=True, server_default=text("true")),
-)
-
-veiculos = Table(
-    "veiculos", metadata,
-    Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("placa", String(10), nullable=False, unique=True),
-    Column("marca", String(60), nullable=False),
-    Column("modelo", String(60), nullable=False),
-    Column("ano", String(4), nullable=False),
-    Column("cliente_id", UUID(as_uuid=True), ForeignKey("clientes.id"), nullable=False, index=True),
-)
 
 servicos = Table(
     "servicos", metadata,
@@ -78,10 +48,13 @@ pecas = Table(
     Column("preco", Numeric(10, 2), nullable=False),
     Column("quantidade", Integer, nullable=False, default=0),
     Column("estoque_minimo", Integer, nullable=False, default=1),
+    Column("reservada", Integer, nullable=False, default=0),
     UniqueConstraint("nome", name="uq_pecas_nome"),
     CheckConstraint("preco > 0", name="ck_pecas_preco_positivo"),
     CheckConstraint("quantidade >= 0", name="ck_pecas_quantidade_nao_negativa"),
     CheckConstraint("estoque_minimo >= 0", name="ck_pecas_estoque_minimo_nao_negativo"),
+    CheckConstraint("reservada >= 0", name="ck_pecas_reservada_nao_negativa"),
+    CheckConstraint("reservada <= quantidade", name="ck_pecas_reservada_dentro_do_estoque"),
 )
 
 movimentacoes_estoque = Table(
@@ -95,57 +68,67 @@ movimentacoes_estoque = Table(
     CheckConstraint("tipo IN ('ENTRADA', 'SAIDA')", name="ck_movimentacoes_tipo"),
 )
 
-ordens_servico = Table(
-    "ordens_servico", metadata,
+reservas = Table(
+    "reservas", metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("cliente_id", UUID(as_uuid=True), ForeignKey("clientes.id"), nullable=False, index=True),
-    Column("veiculo_id", UUID(as_uuid=True), ForeignKey("veiculos.id"), nullable=False),
-    Column("status", Enum(StatusOS), nullable=False, default=StatusOS.AGUARDANDO_APROVACAO, index=True),
-    Column("valor_total", Numeric(10, 2), nullable=True),
-    Column("criado_em", DataHoraUTC(timezone=True), server_default=func.now()),
-    Column("iniciado_em", DataHoraUTC(timezone=True), nullable=True),
-    Column("finalizado_em", DataHoraUTC(timezone=True), nullable=True),
-    CheckConstraint("valor_total IS NULL OR valor_total >= 0", name="ck_ordens_servico_valor_nao_negativo"),
+    Column("os_id", UUID(as_uuid=True), nullable=False, unique=True),
+    Column("saga_id", UUID(as_uuid=True), nullable=False),
+    Column("estado", Enum(ReservaEstado), nullable=False, default=ReservaEstado.ATIVA),
 )
 
-itens_os = Table(
-    "itens_os", metadata,
+reserva_itens = Table(
+    "reserva_itens", metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("os_id", UUID(as_uuid=True), ForeignKey("ordens_servico.id"), nullable=False, index=True),
-    Column("servico_id", UUID(as_uuid=True), ForeignKey("servicos.id"), nullable=True),
-    Column("peca_id", UUID(as_uuid=True), ForeignKey("pecas.id"), nullable=True),
-    Column("quantidade", Integer, nullable=False, default=1),
+    Column("reserva_id", UUID(as_uuid=True), ForeignKey("reservas.id"), nullable=False, index=True),
+    Column("tipo", Enum(TipoItem), nullable=False),
+    Column("item_id", UUID(as_uuid=True), nullable=False),
+    Column("descricao", String(200), nullable=False),
+    Column("quantidade", Integer, nullable=False),
     Column("preco_unitario", Numeric(10, 2), nullable=False),
-    CheckConstraint("quantidade > 0", name="ck_itens_os_quantidade_positiva"),
-    CheckConstraint("preco_unitario >= 0", name="ck_itens_os_preco_nao_negativo"),
-    CheckConstraint("(servico_id IS NULL) <> (peca_id IS NULL)", name="ck_itens_os_servico_ou_peca"),
+    CheckConstraint("quantidade > 0", name="ck_reserva_itens_quantidade_positiva"),
+    CheckConstraint("preco_unitario >= 0", name="ck_reserva_itens_preco_nao_negativo"),
 )
 
-historico_status_os = Table(
-    "historico_status_os", metadata,
+# veiculo_id é do OS Service: aqui é só uma referência, sem chave estrangeira.
+ordens_execucao = Table(
+    "ordens_execucao", metadata,
     Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-    Column("os_id", UUID(as_uuid=True), ForeignKey("ordens_servico.id"), nullable=False, index=True),
-    Column("status", Enum(StatusOS), nullable=False),
-    Column("entrou_em", DataHoraUTC(timezone=True), nullable=False),
+    Column("os_id", UUID(as_uuid=True), nullable=False, unique=True),
+    Column("saga_id", UUID(as_uuid=True), nullable=False),
+    Column("veiculo_id", UUID(as_uuid=True), nullable=False),
+    Column("status", Enum(StatusExecucao), nullable=False, default=StatusExecucao.NA_FILA, index=True),
+    Column("observacao", String(500), nullable=True),
+    Column("enfileirada_em", DataHoraUTC(timezone=True), nullable=False),
+    Column("iniciada_em", DataHoraUTC(timezone=True), nullable=True),
+    Column("finalizada_em", DataHoraUTC(timezone=True), nullable=True),
 )
 
-mapper_registry.map_imperatively(Usuario, usuarios)
+# Outbox e inbox não são entidades de domínio: só tabelas da mensageria (ADR-021).
+outbox = Table(
+    "outbox", metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("exchange", String(60), nullable=False),
+    Column("rota", String(80), nullable=False),
+    Column("tipo", String(40), nullable=False),
+    Column("corpo", JSON, nullable=False),
+    Column("cabecalhos", JSON, nullable=False),
+    Column("criado_em", DataHoraUTC(timezone=True), nullable=False, server_default=func.now()),
+    Column("publicado_em", DataHoraUTC(timezone=True), nullable=True),
+    Index("ix_outbox_pendentes", "publicado_em", "criado_em"),
+)
+
+mensagens_processadas = Table(
+    "mensagens_processadas", metadata,
+    Column("message_id", UUID(as_uuid=True), primary_key=True),
+    Column("tipo", String(40), nullable=False),
+    Column("processada_em", DataHoraUTC(timezone=True), nullable=False, server_default=func.now()),
+)
+
 mapper_registry.map_imperatively(Servico, servicos)
 mapper_registry.map_imperatively(Peca, pecas)
 mapper_registry.map_imperatively(MovimentacaoEstoque, movimentacoes_estoque)
-
-mapper_registry.map_imperatively(Cliente, clientes, properties={
-    "veiculos": relationship(Veiculo, back_populates="cliente"),
+mapper_registry.map_imperatively(ReservaItem, reserva_itens)
+mapper_registry.map_imperatively(Reserva, reservas, properties={
+    "itens": relationship(ReservaItem, order_by=reserva_itens.c.item_id, lazy="selectin"),
 })
-mapper_registry.map_imperatively(Veiculo, veiculos, properties={
-    "cliente": relationship(Cliente, back_populates="veiculos"),
-})
-
-mapper_registry.map_imperatively(HistoricoStatusOS, historico_status_os)
-mapper_registry.map_imperatively(OrdemDeServico, ordens_servico, properties={
-    "itens": relationship(ItemOS, back_populates="os", lazy="selectin"),
-    "historico": relationship(HistoricoStatusOS, order_by=historico_status_os.c.entrou_em, lazy="selectin"),
-})
-mapper_registry.map_imperatively(ItemOS, itens_os, properties={
-    "os": relationship(OrdemDeServico, back_populates="itens"),
-})
+mapper_registry.map_imperatively(OrdemExecucao, ordens_execucao)
