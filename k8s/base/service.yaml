@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: oficina-api
+  name: execucao-service
 spec:
-  # Porta fixa: o NLB do tech-challenge-infra-k8s aponta para a 30080 (ADR-005).
+  # Porta fixa: o NLB da plataforma aponta para a 30081 (contrato de infraestrutura).
   type: NodePort
   selector:
-    app.kubernetes.io/name: oficina-api
+    app.kubernetes.io/name: execucao-service
   ports:
     - name: http
       port: 80
       targetPort: http
-      nodePort: 30080
+      nodePort: 30081
       protocol: TCP
