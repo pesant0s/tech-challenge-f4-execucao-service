@@ -34,3 +34,9 @@ newrelic-agent.log
 
 # Logs
 *.log
+
+# Terraform
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

@@ -1,9 +1,9 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: oficina-api
+  name: execucao-service
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: oficina-api
+      app.kubernetes.io/name: execucao-service
